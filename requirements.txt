@@ -3,4 +3,4 @@ pandas
 requests
 openai
 beautifulsoup4
-readability-lxml
+readability-lxml>=0.8.1
