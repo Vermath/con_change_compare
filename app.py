@@ -8,22 +8,22 @@ from urllib.parse import urlparse, unquote
 # Initialize OpenAI client using Streamlit secrets
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-def extract_slug_from_url(url):
+def extract_base_url_and_slug(url):
     """
-    Extract the post slug from the given WordPress URL.
-    Assumes the URL follows the standard WordPress permalink structure.
+    Extracts the base URL and post slug from a full post URL.
+    Example:
+        Input: https://handletheheat.com/halloween-cookies/
+        Output: base_url = https://handletheheat.com, slug = halloween-cookies
     """
     try:
         parsed_url = urlparse(url)
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
         path = parsed_url.path.strip('/')
-
-        # Split the path and get the last part as slug
-        parts = path.split('/')
-        slug = parts[-1] if parts else None
-        return slug
+        slug = path.split('/')[-1] if path else None
+        return base_url, slug
     except Exception as e:
-        st.error(f"Error extracting slug from URL '{url}': {e}")
-        return None
+        st.error(f"Error parsing URL '{url}': {e}")
+        return None, None
 
 def get_post_by_slug(url, slug):
     """
@@ -125,19 +125,19 @@ def fetch_wordpress_content(url, date):
     Returns the content if successful, else returns an appropriate error message.
     """
     try:
-        slug = extract_slug_from_url(url)
-        if not slug:
-            return None, "Invalid URL or unable to extract slug."
+        base_url, slug = extract_base_url_and_slug(url)
+        if not base_url or not slug:
+            return None, "Invalid URL or unable to extract base URL and slug."
 
-        post_id = get_post_by_slug(url, slug)
+        post_id = get_post_by_slug(base_url, slug)
         if not post_id:
             return None, "Post not found."
 
-        revisions_enabled = check_revisions_enabled(url, post_id)
+        revisions_enabled = check_revisions_enabled(base_url, post_id)
         if not revisions_enabled:
             return None, "Revisions API is not enabled."
 
-        content = fetch_content_by_date(url, post_id, date)
+        content = fetch_content_by_date(base_url, post_id, date)
         if content:
             return content, None
         else:
