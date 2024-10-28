@@ -4,6 +4,7 @@ import requests
 import openai
 from datetime import datetime
 from urllib.parse import urlparse
+from readability import Document
 from bs4 import BeautifulSoup
 
 # Initialize OpenAI client using Streamlit secrets
@@ -12,10 +13,16 @@ openai.api_key = st.secrets["OPENAI_API_KEY"]
 def get_wayback_snapshot(url, target_date):
     """
     Fetch the closest snapshot timestamp for a given URL and date from the Wayback Machine.
+    Handles multiple date formats.
     """
     try:
-        # Format date as YYYYMMDD
-        date_str = datetime.strptime(target_date, "%Y-%m-%d").strftime("%Y%m%d")
+        # Attempt to parse the date using pandas (handles multiple formats)
+        date_obj = pd.to_datetime(target_date, errors='coerce')
+        if pd.isnull(date_obj):
+            st.warning(f"Invalid date format for '{target_date}'. Please use 'YYYY-MM-DD' or 'MM/DD/YYYY'.")
+            return None
+        
+        date_str = date_obj.strftime("%Y%m%d")
         
         cdx_url = (
             f"http://web.archive.org/cdx/search/cdx?"
@@ -33,6 +40,7 @@ def get_wayback_snapshot(url, target_date):
                 archived_url = f"http://web.archive.org/web/{timestamp}/{url}"
                 return archived_url
             else:
+                st.warning(f"No snapshot found for {url} on {target_date}.")
                 return None  # No snapshot found
         else:
             st.warning(f"Failed to fetch snapshot for {url} on {target_date}. Status Code: {response.status_code}")
@@ -43,17 +51,15 @@ def get_wayback_snapshot(url, target_date):
 
 def fetch_content_from_snapshot(archived_url):
     """
-    Fetch and extract textual content from the archived snapshot URL.
+    Fetch and extract textual content from the archived snapshot URL using readability-lxml.
     """
     try:
         response = requests.get(archived_url, timeout=10)
         
         if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Remove scripts and styles
-            for script in soup(["script", "style"]):
-                script.decompose()
+            doc = Document(response.text)
+            content_html = doc.summary()
+            soup = BeautifulSoup(content_html, 'html.parser')
             
             # Extract text
             text = soup.get_text(separator='\n')
@@ -129,8 +135,8 @@ def main():
             with st.form("column_mapping"):
                 st.header("Define Column Mapping")
                 url_col = st.selectbox("Select the URL column", options=df.columns)
-                before_date_col = st.selectbox("Select the Before Date column (YYYY-MM-DD)", options=df.columns)
-                after_date_col = st.selectbox("Select the After Date column (YYYY-MM-DD)", options=df.columns)
+                before_date_col = st.selectbox("Select the Before Date column (e.g., '2024-10-28' or '10/28/2024')", options=df.columns)
+                after_date_col = st.selectbox("Select the After Date column (e.g., '2024-11-28' or '11/28/2024')", options=df.columns)
                 submit_mapping = st.form_submit_button("Submit")
 
             if submit_mapping:
