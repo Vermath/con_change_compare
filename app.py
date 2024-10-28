@@ -4,7 +4,6 @@ import requests
 import openai
 from datetime import datetime
 from urllib.parse import urlparse
-from readability import Document
 from bs4 import BeautifulSoup
 
 # Initialize OpenAI client using Streamlit secrets
@@ -51,15 +50,17 @@ def get_wayback_snapshot(url, target_date):
 
 def fetch_content_from_snapshot(archived_url):
     """
-    Fetch and extract textual content from the archived snapshot URL using readability-lxml.
+    Fetch and extract textual content from the archived snapshot URL.
     """
     try:
         response = requests.get(archived_url, timeout=10)
         
         if response.status_code == 200:
-            doc = Document(response.text)
-            content_html = doc.summary()
-            soup = BeautifulSoup(content_html, 'html.parser')
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Remove scripts and styles
+            for script in soup(["script", "style"]):
+                script.decompose()
             
             # Extract text
             text = soup.get_text(separator='\n')
