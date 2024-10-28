@@ -5,14 +5,26 @@ import openai
 from datetime import datetime
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize OpenAI client using Streamlit secrets
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(5),
+    retry=retry_if_exception_type(requests.exceptions.RequestException),
+    reraise=True
+)
 def get_wayback_snapshot(url, target_date):
     """
     Fetch the closest snapshot timestamp for a given URL and date from the Wayback Machine.
-    Handles multiple date formats.
+    Implements retry logic for transient errors like 503.
     """
     try:
         # Attempt to parse the date using pandas (handles multiple formats)
@@ -22,6 +34,7 @@ def get_wayback_snapshot(url, target_date):
             return None
         
         date_str = date_obj.strftime("%Y%m%d")
+        logger.info(f"Fetching snapshot for URL: {url} on Date: {date_str}")
         
         cdx_url = (
             f"http://web.archive.org/cdx/search/cdx?"
@@ -37,15 +50,26 @@ def get_wayback_snapshot(url, target_date):
                 snapshot = data[1]
                 timestamp = snapshot[1]
                 archived_url = f"http://web.archive.org/web/{timestamp}/{url}"
+                logger.info(f"Snapshot found: {archived_url}")
                 return archived_url
             else:
+                logger.warning(f"No snapshot found for {url} on {target_date}.")
                 st.warning(f"No snapshot found for {url} on {target_date}.")
                 return None  # No snapshot found
+        elif response.status_code == 503:
+            logger.warning(f"503 Service Unavailable for {url} on {target_date}. Retrying...")
+            response.raise_for_status()
         else:
+            logger.error(f"Failed to fetch snapshot for {url} on {target_date}. Status Code: {response.status_code}")
             st.warning(f"Failed to fetch snapshot for {url} on {target_date}. Status Code: {response.status_code}")
             return None
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
+        logger.error(f"RequestException for {url} on {target_date}: {e}")
         st.warning(f"An error occurred while fetching snapshot for {url} on {target_date}: {e}")
+        raise  # Trigger retry
+    except Exception as e:
+        logger.error(f"Unexpected error for {url} on {target_date}: {e}")
+        st.warning(f"An unexpected error occurred: {e}")
         return None
 
 def fetch_content_from_snapshot(archived_url):
@@ -72,9 +96,11 @@ def fetch_content_from_snapshot(archived_url):
             
             return text
         else:
+            logger.warning(f"Failed to fetch content from {archived_url}. Status Code: {response.status_code}")
             st.warning(f"Failed to fetch content from {archived_url}. Status Code: {response.status_code}")
             return None
     except Exception as e:
+        logger.warning(f"An error occurred while fetching content from {archived_url}: {e}")
         st.warning(f"An error occurred while fetching content from {archived_url}: {e}")
         return None
 
@@ -110,6 +136,7 @@ def evaluate_changes(before_content, after_content):
         evaluation = response.choices[0].message['content'].strip()
         return evaluation
     except Exception as e:
+        logger.error(f"An error occurred while evaluating changes: {e}")
         st.error(f"An error occurred while evaluating changes: {e}")
         return "Error"
 
