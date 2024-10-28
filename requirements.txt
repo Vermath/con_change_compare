@@ -2,3 +2,4 @@ streamlit
 pandas
 requests
 openai
+beautifulsoup4

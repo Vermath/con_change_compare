@@ -3,147 +3,73 @@ import pandas as pd
 import requests
 import openai
 from datetime import datetime
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
 
 # Initialize OpenAI client using Streamlit secrets
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-def extract_base_url_and_slug(url):
+def get_wayback_snapshot(url, target_date):
     """
-    Extracts the base URL and post slug from a full post URL.
-    Example:
-        Input: https://handletheheat.com/halloween-cookies/
-        Output: base_url = https://handletheheat.com, slug = halloween-cookies
+    Fetch the closest snapshot timestamp for a given URL and date from the Wayback Machine.
     """
     try:
-        parsed_url = urlparse(url)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        path = parsed_url.path.strip('/')
-        slug = path.split('/')[-1] if path else None
-        return base_url, slug
-    except Exception as e:
-        st.error(f"Error parsing URL '{url}': {e}")
-        return None, None
-
-def get_post_by_slug(url, slug):
-    """
-    Fetch the post data from WordPress REST API using the slug.
-    Returns the post ID if found, else None.
-    """
-    try:
-        api_endpoint = f"{url}/wp-json/wp/v2/posts?slug={slug}"
-        response = requests.get(api_endpoint)
-
+        # Format date as YYYYMMDD
+        date_str = datetime.strptime(target_date, "%Y-%m-%d").strftime("%Y%m%d")
+        
+        cdx_url = (
+            f"http://web.archive.org/cdx/search/cdx?"
+            f"url={url}&output=json&from={date_str}&to={date_str}&limit=1&filter=statuscode:200&collapse=digest"
+        )
+        
+        response = requests.get(cdx_url, timeout=10)
+        
         if response.status_code == 200:
             data = response.json()
-            if data:
-                post = data[0]
-                post_id = post.get('id')
-                return post_id
+            if len(data) > 1:
+                # The first row is the header
+                snapshot = data[1]
+                timestamp = snapshot[1]
+                archived_url = f"http://web.archive.org/web/{timestamp}/{url}"
+                return archived_url
             else:
-                st.warning(f"No post found with slug '{slug}' at URL: {url}")
-                return None
+                return None  # No snapshot found
         else:
-            st.error(f"Failed to fetch post with slug '{slug}' from {url}. Status Code: {response.status_code}")
+            st.warning(f"Failed to fetch snapshot for {url} on {target_date}. Status Code: {response.status_code}")
             return None
     except Exception as e:
-        st.error(f"An error occurred while fetching post by slug: {e}")
+        st.warning(f"An error occurred while fetching snapshot for {url} on {target_date}: {e}")
         return None
 
-def check_revisions_enabled(url, post_id):
+def fetch_content_from_snapshot(archived_url):
     """
-    Check if revisions are enabled for the given post.
-    Returns True if revisions are available, else False.
-    """
-    try:
-        revisions_endpoint = f"{url}/wp-json/wp/v2/posts/{post_id}/revisions"
-        response = requests.get(revisions_endpoint)
-
-        if response.status_code == 200:
-            data = response.json()
-            if isinstance(data, list):
-                return True
-            else:
-                return False
-        elif response.status_code == 404:
-            # Revisions endpoint not found
-            return False
-        else:
-            st.error(f"Failed to check revisions for post ID {post_id}. Status Code: {response.status_code}")
-            return False
-    except Exception as e:
-        st.error(f"An error occurred while checking revisions: {e}")
-        return False
-
-def fetch_content_by_date(url, post_id, target_date):
-    """
-    Fetch the post content as of the specified date using revisions.
-    Returns the content if found, else None.
+    Fetch and extract textual content from the archived snapshot URL.
     """
     try:
-        # Fetch all revisions
-        revisions_endpoint = f"{url}/wp-json/wp/v2/posts/{post_id}/revisions"
-        response = requests.get(revisions_endpoint)
-
+        response = requests.get(archived_url, timeout=10)
+        
         if response.status_code == 200:
-            revisions = response.json()
-            if not revisions:
-                st.warning(f"No revisions found for post ID {post_id} on {url}.")
-                return None
-
-            # Convert target_date to datetime object
-            if isinstance(target_date, str):
-                target_date_obj = pd.to_datetime(target_date)
-            else:
-                target_date_obj = target_date
-
-            # Find the latest revision before or on the target_date
-            suitable_revisions = [
-                rev for rev in revisions
-                if pd.to_datetime(rev['date']) <= target_date_obj
-            ]
-
-            if not suitable_revisions:
-                st.warning(f"No revisions found for post ID {post_id} before {target_date_obj} on {url}.")
-                return None
-
-            # Get the most recent suitable revision
-            latest_revision = max(suitable_revisions, key=lambda x: pd.to_datetime(x['date']))
-            content = latest_revision.get('content', {}).get('rendered', '')
-            return content
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Remove scripts and styles
+            for script in soup(["script", "style"]):
+                script.decompose()
+            
+            # Extract text
+            text = soup.get_text(separator='\n')
+            
+            # Collapse multiple newlines
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = '\n'.join(chunk for chunk in chunks if chunk)
+            
+            return text
         else:
-            st.error(f"Failed to fetch revisions for post ID {post_id}. Status Code: {response.status_code}")
+            st.warning(f"Failed to fetch content from {archived_url}. Status Code: {response.status_code}")
             return None
     except Exception as e:
-        st.error(f"An error occurred while fetching content by date: {e}")
+        st.warning(f"An error occurred while fetching content from {archived_url}: {e}")
         return None
-
-def fetch_wordpress_content(url, date):
-    """
-    Fetch content from a WordPress site for a specific date using the WordPress REST API.
-    Checks if revisions are enabled before attempting to fetch.
-    Returns the content if successful, else returns an appropriate error message.
-    """
-    try:
-        base_url, slug = extract_base_url_and_slug(url)
-        if not base_url or not slug:
-            return None, "Invalid URL or unable to extract base URL and slug."
-
-        post_id = get_post_by_slug(base_url, slug)
-        if not post_id:
-            return None, "Post not found."
-
-        revisions_enabled = check_revisions_enabled(base_url, post_id)
-        if not revisions_enabled:
-            return None, "Revisions API is not enabled."
-
-        content = fetch_content_by_date(base_url, post_id, date)
-        if content:
-            return content, None
-        else:
-            return None, "Content not found for the specified date."
-    except Exception as e:
-        return None, f"Error: {e}"
 
 def evaluate_changes(before_content, after_content):
     """
@@ -181,11 +107,11 @@ def evaluate_changes(before_content, after_content):
         return "Error"
 
 def main():
-    st.title("WordPress Content Change Evaluator")
+    st.title("Website Content Change Evaluator Using Wayback Machine")
     st.write("""
         Upload a CSV file containing URLs, before dates, and after dates.
         Define which columns correspond to each field.
-        The app will fetch the content from each URL on the specified dates and evaluate the changes.
+        The app will fetch the content from each URL on the specified dates using the Wayback Machine and evaluate the changes.
     """)
 
     # File uploader
@@ -203,10 +129,10 @@ def main():
             with st.form("column_mapping"):
                 st.header("Define Column Mapping")
                 url_col = st.selectbox("Select the URL column", options=df.columns)
-                before_date_col = st.selectbox("Select the Before Date column", options=df.columns)
-                after_date_col = st.selectbox("Select the After Date column", options=df.columns)
+                before_date_col = st.selectbox("Select the Before Date column (YYYY-MM-DD)", options=df.columns)
+                after_date_col = st.selectbox("Select the After Date column (YYYY-MM-DD)", options=df.columns)
                 submit_mapping = st.form_submit_button("Submit")
-            
+
             if submit_mapping:
                 # Validate that selected columns are unique
                 if len({url_col, before_date_col, after_date_col}) < 3:
@@ -227,16 +153,34 @@ def main():
                         
                         status_text.text(f"Processing row {idx + 1} of {total}: {url}")
                         
-                        # Fetch before content
-                        before_content, before_error = fetch_wordpress_content(url, before_date)
+                        # Fetch before snapshot
+                        before_snapshot_url = get_wayback_snapshot(url, before_date)
+                        if before_snapshot_url:
+                            before_content = fetch_content_from_snapshot(before_snapshot_url)
+                            if not before_content:
+                                before_error = "Failed to extract content."
+                        else:
+                            before_content = None
+                            before_error = "No snapshot found."
                         
-                        # Fetch after content
-                        after_content, after_error = fetch_wordpress_content(url, after_date)
+                        # Fetch after snapshot
+                        after_snapshot_url = get_wayback_snapshot(url, after_date)
+                        if after_snapshot_url:
+                            after_content = fetch_content_from_snapshot(after_snapshot_url)
+                            if not after_content:
+                                after_error = "Failed to extract content."
+                        else:
+                            after_content = None
+                            after_error = "No snapshot found."
                         
-                        if before_error or after_error:
-                            # If there's an error in fetching either content, mark accordingly
-                            if before_error == "Revisions API is not enabled" or after_error == "Revisions API is not enabled":
-                                evaluation = "Revisions API is not enabled"
+                        # Determine evaluation status
+                        if not before_content or not after_content:
+                            if not before_snapshot_url and not after_snapshot_url:
+                                evaluation = "No Snapshots Found"
+                            elif not before_snapshot_url:
+                                evaluation = "No 'Before' Snapshot"
+                            elif not after_snapshot_url:
+                                evaluation = "No 'After' Snapshot"
                             else:
                                 evaluation = "Insufficient Data"
                         else:
