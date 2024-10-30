@@ -17,37 +17,39 @@ openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type(requests.exceptions.RequestException),
-    reraise=True
+    stop=stop_after_attempt(3),  # Reduced attempts to prevent long wait times
+    retry=retry_if_exception_type((requests.exceptions.RequestException,)),
+    reraise=False  # Do not raise exceptions after retries
 )
 def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, collapse=None, limit=1):
     """
     Fetch snapshots for a given URL and date from the Wayback CDX Server API.
-    
+
     Parameters:
         url (str): The URL to query.
         target_date (str): The date for the snapshot (format: 'YYYY-MM-DD' or 'MM/DD/YYYY').
         match_type (str): The match type ('exact', 'prefix', 'host', 'domain').
         filters (list): List of filter strings, e.g., ['statuscode:200', '!mimetype:image/png'].
-        collapse (str): The field to collapse results on, e.g., 'digest', 'timestamp:10'.
+        collapse (list): List of fields to collapse results on, e.g., ['digest', 'timestamp:10'].
         limit (int): Number of results to fetch.
-        
+
     Returns:
-        list: List of snapshot dictionaries with fields ['urlkey', 'timestamp', 'original', 'mimetype', 'statuscode', 'digest', 'length'].
+        tuple: (list of snapshot dictionaries, error message or None)
     """
     try:
         # Parse and format the date
         date_obj = pd.to_datetime(target_date, errors='coerce')
         if pd.isnull(date_obj):
-            st.warning(f"Invalid date format for '{target_date}'. Please use 'YYYY-MM-DD' or 'MM/DD/YYYY'.")
-            return []
-        
+            error_msg = f"Invalid date format: '{target_date}'. Use 'YYYY-MM-DD' or 'MM/DD/YYYY'."
+            logger.warning(error_msg)
+            st.warning(error_msg)
+            return [], error_msg
+
         date_str = date_obj.strftime("%Y%m%d")  # Format: YYYYMMDD
-        
+
         # Construct the base CDX API URL
         cdx_url = "http://web.archive.org/cdx/search/cdx"
-        
+
         # Prepare query parameters
         params = {
             'url': url,
@@ -55,43 +57,34 @@ def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, co
             'from': date_str,
             'to': date_str,
             'limit': limit,
-            'filter': filters,
-            'collapse': collapse,
             'matchType': match_type
         }
-        
-        # Remove None or empty parameters
-        params = {k: v for k, v in params.items() if v}
-        
-        # For filters, if it's a list, join them with '&filter='
-        # e.g., ['statuscode:200', '!mimetype:image/png'] becomes 'filter=statuscode:200&filter=!mimetype:image/png'
-        if 'filter' in params and isinstance(params['filter'], list):
-            filter_params = '&'.join([f'filter={filt}' for filt in params['filter']])
-            # Remove 'filter' key and append filter_params to the URL
-            del params['filter']
-        else:
-            filter_params = ''
-        
-        # Similarly handle collapse if multiple
-        if 'collapse' in params and isinstance(params['collapse'], list):
-            collapse_params = '&'.join([f'collapse={col}' for col in params['collapse']])
-            del params['collapse']
-        else:
-            collapse_params = ''
-        
-        # Construct the final query string
-        query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
-        if filter_params:
-            query_string += f"&{filter_params}"
-        if collapse_params:
-            query_string += f"&{collapse_params}"
-        
+
+        # Add filters if provided
+        if filters:
+            for filt in filters:
+                params.setdefault('filter', []).append(filt)
+
+        # Add collapse parameters if provided
+        if collapse:
+            for col in collapse:
+                params.setdefault('collapse', []).append(col)
+
+        # Construct the final query string with multiple filters and collapse parameters
+        query_params = []
+        for key, value in params.items():
+            if isinstance(value, list):
+                for item in value:
+                    query_params.append(f"{key}={item}")
+            else:
+                query_params.append(f"{key}={value}")
+        query_string = '&'.join(query_params)
         full_url = f"{cdx_url}?{query_string}"
-        
+
         logger.info(f"Querying CDX API: {full_url}")
-        
+
         response = requests.get(full_url, timeout=10)
-        
+
         if response.status_code == 200:
             data = response.json()
             if len(data) > 1:
@@ -99,24 +92,87 @@ def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, co
                 headers = data[0]
                 snapshots = [dict(zip(headers, row)) for row in data[1:]]
                 logger.info(f"Found {len(snapshots)} snapshots for {url} on {target_date}.")
-                return snapshots
+                return snapshots, None
             else:
-                st.warning(f"No snapshot found for {url} on {target_date}.")
-                return []
-        elif response.status_code == 503:
-            # Raise exception to trigger retry
-            response.raise_for_status()
+                warning_msg = f"No snapshot found for {url} on {target_date}."
+                logger.warning(warning_msg)
+                st.warning(warning_msg)
+                return [], warning_msg
         else:
-            st.warning(f"Failed to fetch snapshot for {url} on {target_date}. Status Code: {response.status_code}")
-            return []
+            warning_msg = f"Failed to fetch snapshot for {url} on {target_date}. Status Code: {response.status_code}"
+            logger.warning(warning_msg)
+            st.warning(warning_msg)
+            return [], warning_msg
+
     except requests.exceptions.RequestException as e:
-        logger.error(f"RequestException for {url} on {target_date}: {e}")
-        st.warning(f"An error occurred while fetching snapshot for {url} on {target_date}: {e}")
-        raise  # Trigger retry
+        error_msg = f"An error occurred while fetching snapshot for {url} on {target_date}: {e}"
+        logger.error(error_msg)
+        st.warning(error_msg)
+        return [], error_msg
     except Exception as e:
-        logger.error(f"Unexpected error for {url} on {target_date}: {e}")
-        st.warning(f"An unexpected error occurred: {e}")
-        return []
+        error_msg = f"An unexpected error occurred: {e}"
+        logger.error(error_msg)
+        st.warning(error_msg)
+        return [], error_msg
+
+def get_oldest_snapshot(url):
+    """
+    Fetch the oldest snapshot available for a given URL from the Wayback CDX Server API.
+
+    Parameters:
+        url (str): The URL to query.
+
+    Returns:
+        tuple: (snapshot dictionary, error message or None)
+    """
+    try:
+        # No date range specified to fetch the oldest snapshot
+        cdx_url = "http://web.archive.org/cdx/search/cdx"
+        params = {
+            'url': url,
+            'output': 'json',
+            'limit': 1,
+            'sort': 'ascending',  # Oldest first
+            'matchType': 'exact'
+        }
+
+        # Construct the query string
+        query_params = [f"{key}={value}" for key, value in params.items()]
+        query_string = '&'.join(query_params)
+        full_url = f"{cdx_url}?{query_string}"
+
+        logger.info(f"Fetching oldest snapshot: {full_url}")
+
+        response = requests.get(full_url, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+            if len(data) > 1:
+                headers = data[0]
+                snapshot = dict(zip(headers, data[1]))
+                logger.info(f"Oldest snapshot found: {snapshot}")
+                return snapshot, None
+            else:
+                warning_msg = f"No snapshots available for {url}."
+                logger.warning(warning_msg)
+                st.warning(warning_msg)
+                return None, warning_msg
+        else:
+            warning_msg = f"Failed to fetch oldest snapshot for {url}. Status Code: {response.status_code}"
+            logger.warning(warning_msg)
+            st.warning(warning_msg)
+            return None, warning_msg
+
+    except requests.exceptions.RequestException as e:
+        error_msg = f"An error occurred while fetching the oldest snapshot for {url}: {e}"
+        logger.error(error_msg)
+        st.warning(error_msg)
+        return None, error_msg
+    except Exception as e:
+        error_msg = f"An unexpected error occurred while fetching the oldest snapshot for {url}: {e}"
+        logger.error(error_msg)
+        st.warning(error_msg)
+        return None, error_msg
 
 def fetch_content_from_snapshot(archived_url):
     """
@@ -124,22 +180,22 @@ def fetch_content_from_snapshot(archived_url):
     """
     try:
         response = requests.get(archived_url, timeout=10)
-        
+
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            
+
             # Remove scripts and styles
             for script in soup(["script", "style"]):
                 script.decompose()
-            
+
             # Extract text
             text = soup.get_text(separator='\n')
-            
+
             # Collapse multiple newlines
             lines = (line.strip() for line in text.splitlines())
             chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
             text = '\n'.join(chunk for chunk in chunks if chunk)
-            
+
             return text
         else:
             logger.warning(f"Failed to fetch content from {archived_url}. Status Code: {response.status_code}")
@@ -161,7 +217,7 @@ def evaluate_changes(before_content, after_content):
             "Evaluate if it is a small, medium, or large change to the content or if it is a complete overhaul of the content. "
             "Return a score of Small, Medium, Large, or Overhaul. This should be the only thing returned."
         )
-        
+
         messages = [
             {
                 "role": "user",
@@ -172,12 +228,12 @@ def evaluate_changes(before_content, after_content):
                 ),
             }
         ]
-        
+
         response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=messages
         )
-        
+
         # Extract the response text
         evaluation = response.choices[0].message['content'].strip()
         return evaluation
@@ -201,7 +257,7 @@ def main():
         try:
             df = pd.read_csv(uploaded_file)
             st.success("CSV file uploaded successfully!")
-            
+
             # Display the first few rows
             st.dataframe(df.head())
 
@@ -243,26 +299,30 @@ def main():
                     st.error("Please select three distinct columns for URL, Before Date, and After Date.")
                 else:
                     st.success("Column mapping saved!")
-                    
+
                     # Parse collapse and filters
                     collapse = [item.strip() for item in collapse_options.split(',') if item.strip()] if collapse_options else None
                     filters = [item.strip() for item in filters_input.split(',') if item.strip()] if filters_input else None
-                    
-                    # Process each row
+
+                    # Initialize results list
                     results = []
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     total = len(df)
-                    
+
                     for idx, row in df.iterrows():
                         url = row[url_col]
                         before_date = row[before_date_col]
                         after_date = row[after_date_col]
-                        
+
                         status_text.text(f"Processing row {idx + 1} of {total}: {url}")
-                        
+
+                        # Initialize error and oldest_snapshot_date
+                        error = None
+                        oldest_snapshot_date = None
+
                         # Fetch before snapshots
-                        before_snapshots = get_wayback_snapshots(
+                        before_snapshots, before_error = get_wayback_snapshots(
                             url=url,
                             target_date=before_date,
                             match_type=match_type,
@@ -270,16 +330,30 @@ def main():
                             collapse=collapse,
                             limit=limit
                         )
-                        if before_snapshots:
-                            before_content = fetch_content_from_snapshot(before_snapshots[0]['original'])
-                            if not before_content:
-                                before_error = "Failed to extract content."
+
+                        if before_error:
+                            error = before_error
+                            # Attempt to fetch the oldest snapshot
+                            oldest_snapshot, oldest_error = get_oldest_snapshot(url)
+                            if oldest_snapshot:
+                                oldest_snapshot_date = pd.to_datetime(oldest_snapshot['timestamp'], format="%Y%m%d%H%M%S").strftime("%Y-%m-%d")
+                                before_content = fetch_content_from_snapshot(oldest_snapshot['original'])
+                                if not before_content:
+                                    error += " Failed to extract 'Before' content from the oldest snapshot."
+                            else:
+                                before_content = None
+                                # Error message already captured
                         else:
-                            before_content = None
-                            before_error = "No snapshot found."
-                        
+                            if before_snapshots:
+                                before_content = fetch_content_from_snapshot(before_snapshots[0]['original'])
+                                if not before_content:
+                                    error = "Failed to extract 'Before' content."
+                            else:
+                                before_content = None
+                                error = "No 'Before' snapshot found."
+
                         # Fetch after snapshots
-                        after_snapshots = get_wayback_snapshots(
+                        after_snapshots, after_error = get_wayback_snapshots(
                             url=url,
                             target_date=after_date,
                             match_type=match_type,
@@ -287,43 +361,74 @@ def main():
                             collapse=collapse,
                             limit=limit
                         )
-                        if after_snapshots:
-                            after_content = fetch_content_from_snapshot(after_snapshots[0]['original'])
-                            if not after_content:
-                                after_error = "Failed to extract content."
-                        else:
-                            after_content = None
-                            after_error = "No snapshot found."
-                        
-                        # Determine evaluation status
-                        if not before_content or not after_content:
-                            if not before_snapshots and not after_snapshots:
-                                evaluation = "No Snapshots Found"
-                            elif not before_snapshots:
-                                evaluation = "No 'Before' Snapshot"
-                            elif not after_snapshots:
-                                evaluation = "No 'After' Snapshot"
+
+                        if after_error:
+                            if error:
+                                error += " | " + after_error
                             else:
-                                evaluation = "Insufficient Data"
+                                error = after_error
+                            # Attempt to fetch the oldest snapshot
+                            oldest_snapshot, oldest_error = get_oldest_snapshot(url)
+                            if oldest_snapshot:
+                                oldest_snapshot_date = pd.to_datetime(oldest_snapshot['timestamp'], format="%Y%m%d%H%M%S").strftime("%Y-%m-%d")
+                                after_content = fetch_content_from_snapshot(oldest_snapshot['original'])
+                                if not after_content:
+                                    error += " Failed to extract 'After' content from the oldest snapshot."
+                            else:
+                                after_content = None
+                                # Error message already captured
                         else:
-                            # Evaluate changes using OpenAI API
+                            if after_snapshots:
+                                after_content = fetch_content_from_snapshot(after_snapshots[0]['original'])
+                                if not after_content:
+                                    if error:
+                                        error += " | Failed to extract 'After' content."
+                                    else:
+                                        error = "Failed to extract 'After' content."
+                            else:
+                                after_content = None
+                                if error:
+                                    error += " | No 'After' snapshot found."
+                                else:
+                                    error = "No 'After' snapshot found."
+
+                        # Determine evaluation
+                        if before_content and after_content:
                             evaluation = evaluate_changes(before_content, after_content)
-                        
+                        else:
+                            evaluation = "Insufficient Data"
+
+                        # Append results
                         results.append({
                             "URL": url,
                             "Before Date": before_date,
                             "After Date": after_date,
-                            "Change Evaluation": evaluation
+                            "Oldest Snapshot Date": oldest_snapshot_date,
+                            "Change Evaluation": evaluation,
+                            "Error": error
                         })
-                        
+
+                        # Update progress bar
                         progress_bar.progress((idx + 1) / total)
-                    
+
+                    # Finalize
                     progress_bar.empty()
                     status_text.empty()
                     result_df = pd.DataFrame(results)
+
+                    # Reorder columns for clarity
+                    result_df = result_df[[
+                        "URL",
+                        "Before Date",
+                        "After Date",
+                        "Oldest Snapshot Date",
+                        "Change Evaluation",
+                        "Error"
+                    ]]
+
                     st.header("Evaluation Results")
                     st.dataframe(result_df)
-                    
+
                     # Option to download results
                     csv = result_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
