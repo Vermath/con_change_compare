@@ -17,6 +17,11 @@ client = openai.OpenAI(
     api_key=st.secrets["OPENAI_API_KEY"],
 )
 
+# Custom headers for requests
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (compatible; WaybackMachineClient/1.0; +http://yourdomain.com)'
+}
+
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=10),
     stop=stop_after_attempt(3),
@@ -49,7 +54,7 @@ def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, co
 
         date_str = date_obj.strftime("%Y%m%d")  # Format: YYYYMMDD
 
-        # Construct the base CDX API URL with HTTPS
+        # Construct the base CDX API URL
         cdx_url = "https://web.archive.org/cdx/search/cdx"
 
         # Prepare query parameters
@@ -85,7 +90,8 @@ def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, co
 
         logger.info(f"Querying CDX API: {full_url}")
 
-        response = requests.get(full_url, timeout=10)
+        # Make the request with custom headers
+        response = requests.get(full_url, headers=HEADERS, timeout=10)
 
         if response.status_code == 200:
             data = response.json()
@@ -145,7 +151,8 @@ def get_oldest_snapshot(url):
 
         logger.info(f"Fetching oldest snapshot: {full_url}")
 
-        response = requests.get(full_url, timeout=10)
+        # Make the request with custom headers
+        response = requests.get(full_url, headers=HEADERS, timeout=10)
 
         if response.status_code == 200:
             data = response.json()
@@ -181,7 +188,8 @@ def fetch_content_from_snapshot(archived_url):
     Fetch and extract textual content from the archived snapshot URL.
     """
     try:
-        response = requests.get(archived_url, timeout=10)
+        # Make the request with custom headers
+        response = requests.get(archived_url, headers=HEADERS, timeout=10)
 
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
