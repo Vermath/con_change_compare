@@ -49,8 +49,8 @@ def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, co
 
         date_str = date_obj.strftime("%Y%m%d")  # Format: YYYYMMDD
 
-        # Construct the base CDX API URL
-        cdx_url = "http://web.archive.org/cdx/search/cdx"
+        # Construct the base CDX API URL with HTTPS
+        cdx_url = "https://web.archive.org/cdx/search/cdx"
 
         # Prepare query parameters
         params = {
@@ -129,7 +129,7 @@ def get_oldest_snapshot(url):
     """
     try:
         # No date range specified to fetch the oldest snapshot
-        cdx_url = "http://web.archive.org/cdx/search/cdx"
+        cdx_url = "https://web.archive.org/cdx/search/cdx"
         params = {
             'url': url,
             'output': 'json',
