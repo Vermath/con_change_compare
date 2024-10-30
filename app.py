@@ -13,13 +13,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize OpenAI client using Streamlit secrets
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+client = openai.OpenAI(
+    api_key=st.secrets["OPENAI_API_KEY"],
+)
 
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    stop=stop_after_attempt(3),  # Reduced attempts to prevent long wait times
+    stop=stop_after_attempt(3),
     retry=retry_if_exception_type((requests.exceptions.RequestException,)),
-    reraise=False  # Do not raise exceptions after retries
+    reraise=False
 )
 def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, collapse=None, limit=1):
     """
@@ -212,30 +214,24 @@ def evaluate_changes(before_content, after_content):
     Returns one of: Small, Medium, Large, Overhaul
     """
     try:
-        prompt = (
-            "Assess how much the following content has changed since the prior date. "
-            "Evaluate if it is a small, medium, or large change to the content or if it is a complete overhaul of the content. "
-            "Return a score of Small, Medium, Large, or Overhaul. This should be the only thing returned."
-        )
-
-        messages = [
-            {
-                "role": "user",
-                "content": (
-                    f"{prompt}\n\n"
-                    f"Before Content:\n{before_content}\n\n"
-                    f"After Content:\n{after_content}"
-                ),
-            }
-        ]
-
-        response = openai.ChatCompletion.create(
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Assess how much the following content has changed since the prior date. "
+                        "Evaluate if it is a small, medium, or large change to the content or if it is a complete overhaul of the content. "
+                        "Return a score of Small, Medium, Large, or Overhaul. This should be the only thing returned.\n\n"
+                        f"Before Content:\n{before_content}\n\n"
+                        f"After Content:\n{after_content}"
+                    ),
+                }
+            ],
             model="gpt-4o-mini",
-            messages=messages
         )
 
         # Extract the response text
-        evaluation = response.choices[0].message['content'].strip()
+        evaluation = chat_completion.choices[0].message['content'].strip()
         return evaluation
     except Exception as e:
         logger.error(f"An error occurred while evaluating changes: {e}")
