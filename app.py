@@ -231,7 +231,7 @@ def evaluate_changes(before_content, after_content):
         )
 
         # Extract the response text
-        evaluation = chat_completion.choices[0].message['content'].strip()
+        evaluation = chat_completion.choices[0].message.content.strip()
         return evaluation
     except Exception as e:
         logger.error(f"An error occurred while evaluating changes: {e}")
