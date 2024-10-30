@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import openai
+import time  # Import time module for delays
 from datetime import datetime
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
@@ -93,6 +94,9 @@ def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, co
         # Make the request with custom headers
         response = requests.get(full_url, headers=HEADERS, timeout=10)
 
+        # **Add delay to comply with rate limits**
+        time.sleep(4)
+
         if response.status_code == 200:
             data = response.json()
             if len(data) > 1:
@@ -154,6 +158,9 @@ def get_oldest_snapshot(url):
         # Make the request with custom headers
         response = requests.get(full_url, headers=HEADERS, timeout=10)
 
+        # **Add delay to comply with rate limits**
+        time.sleep(4)
+
         if response.status_code == 200:
             data = response.json()
             if len(data) > 1:
@@ -190,6 +197,9 @@ def fetch_content_from_snapshot(archived_url):
     try:
         # Make the request with custom headers
         response = requests.get(archived_url, headers=HEADERS, timeout=10)
+
+        # **Add delay to comply with rate limits**
+        time.sleep(4)
 
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
