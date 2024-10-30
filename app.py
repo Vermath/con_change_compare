@@ -2,12 +2,12 @@ import streamlit as st
 import pandas as pd
 import requests
 import openai
-import time  # Import time module for delays
+import logging
 from datetime import datetime
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
-import logging
+from ratelimit import limits, sleep_and_retry
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +23,18 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (compatible; WaybackMachineClient/1.0; +http://yourdomain.com)'
 }
 
+# Rate limit configuration
+CALLS = 15
+PERIOD = 60  # seconds
+
+@sleep_and_retry
+@limits(calls=CALLS, period=PERIOD)
+def limited_requests_get(url, **kwargs):
+    """
+    A wrapper around requests.get that respects the rate limit.
+    """
+    return requests.get(url, **kwargs)
+
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=10),
     stop=stop_after_attempt(3),
@@ -32,17 +44,6 @@ HEADERS = {
 def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, collapse=None, limit=1):
     """
     Fetch snapshots for a given URL and date from the Wayback CDX Server API.
-
-    Parameters:
-        url (str): The URL to query.
-        target_date (str): The date for the snapshot (format: 'YYYY-MM-DD' or 'MM/DD/YYYY').
-        match_type (str): The match type ('exact', 'prefix', 'host', 'domain').
-        filters (list): List of filter strings, e.g., ['statuscode:200', '!mimetype:image/png'].
-        collapse (list): List of fields to collapse results on, e.g., ['digest', 'timestamp:10'].
-        limit (int): Number of results to fetch.
-
-    Returns:
-        tuple: (list of snapshot dictionaries, error message or None)
     """
     try:
         # Parse and format the date
@@ -91,11 +92,8 @@ def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, co
 
         logger.info(f"Querying CDX API: {full_url}")
 
-        # Make the request with custom headers
-        response = requests.get(full_url, headers=HEADERS, timeout=10)
-
-        # **Add delay to comply with rate limits**
-        time.sleep(4)
+        # Make the request with rate limiting
+        response = limited_requests_get(full_url, headers=HEADERS, timeout=10)
 
         if response.status_code == 200:
             data = response.json()
@@ -130,12 +128,6 @@ def get_wayback_snapshots(url, target_date, match_type='exact', filters=None, co
 def get_oldest_snapshot(url):
     """
     Fetch the oldest snapshot available for a given URL from the Wayback CDX Server API.
-
-    Parameters:
-        url (str): The URL to query.
-
-    Returns:
-        tuple: (snapshot dictionary, error message or None)
     """
     try:
         # No date range specified to fetch the oldest snapshot
@@ -155,11 +147,8 @@ def get_oldest_snapshot(url):
 
         logger.info(f"Fetching oldest snapshot: {full_url}")
 
-        # Make the request with custom headers
-        response = requests.get(full_url, headers=HEADERS, timeout=10)
-
-        # **Add delay to comply with rate limits**
-        time.sleep(4)
+        # Make the request with rate limiting
+        response = limited_requests_get(full_url, headers=HEADERS, timeout=10)
 
         if response.status_code == 200:
             data = response.json()
@@ -195,11 +184,8 @@ def fetch_content_from_snapshot(archived_url):
     Fetch and extract textual content from the archived snapshot URL.
     """
     try:
-        # Make the request with custom headers
-        response = requests.get(archived_url, headers=HEADERS, timeout=10)
-
-        # **Add delay to comply with rate limits**
-        time.sleep(4)
+        # Make the request with rate limiting
+        response = limited_requests_get(archived_url, headers=HEADERS, timeout=10)
 
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
